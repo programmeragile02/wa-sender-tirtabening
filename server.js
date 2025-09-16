@@ -16,17 +16,21 @@ const SESSION_LABEL = process.env.WWS_SESSION_LABEL || "tirtabening";
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
 // ------------ Middleware ------------
 app.use(express.json({ limit: "1mb" }));
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowedOrigins.length === 0) return cb(null, true);
-    return allowedOrigins.includes(origin) ? cb(null, true) : cb(new Error("Not allowed by CORS"));
-  }
-}));
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.length === 0) return cb(null, true);
+      return allowedOrigins.includes(origin)
+        ? cb(null, true)
+        : cb(new Error("Not allowed by CORS"));
+    },
+  })
+);
 
 // Simple API key auth
 app.use((req, res, next) => {
@@ -41,7 +45,7 @@ const limiter = rateLimit({ windowMs: 60 * 1000, max: 60 }); // 60 req/menit/ser
 app.use(limiter);
 
 // ------------ WA Client ------------
-let lastQRData = null;     // simpan QR terakhir (data url)
+let lastQRData = null; // simpan QR terakhir (data url)
 let ready = false;
 let state = "INIT";
 let me = null;
@@ -50,8 +54,8 @@ const client = new Client({
   authStrategy: new LocalAuth({ clientId: SESSION_LABEL }),
   puppeteer: {
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
-  }
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  },
 });
 
 client.on("qr", async (qr) => {
@@ -68,7 +72,9 @@ client.on("ready", async () => {
   ready = true;
   try {
     me = await client.getMe();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   lastQRData = null;
   console.log("[WA] Ready.");
 });
@@ -110,12 +116,19 @@ function normalizePhone(raw) {
 
 // Normalisasi nomor
 function normNumber(raw) {
-  return String(raw || "").replace(/\D/g, "").replace(/^0/, "62");
+  return String(raw || "")
+    .replace(/\D/g, "")
+    .replace(/^0/, "62");
 }
 
 async function ensureReady(res) {
   if (!ready) {
-    return res.status(503).json({ ok: false, message: "WhatsApp belum siap. Scan QR / tunggu READY." });
+    return res
+      .status(503)
+      .json({
+        ok: false,
+        message: "WhatsApp belum siap. Scan QR / tunggu READY.",
+      });
   }
   return null;
 }
@@ -142,11 +155,14 @@ app.post("/send", async (req, res) => {
     if (await ensureReady(res)) return;
     const { to, text } = req.body || {};
     if (!to || !text) {
-      return res.status(400).json({ ok: false, message: "`to` dan `text` wajib" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "`to` dan `text` wajib" });
     }
 
     const msisdn = normalizePhone(to);
-    if (!msisdn) return res.status(400).json({ ok: false, message: "Nomor tidak valid" });
+    if (!msisdn)
+      return res.status(400).json({ ok: false, message: "Nomor tidak valid" });
 
     const jid = `${msisdn}@c.us`;
     const sent = await client.sendMessage(jid, text);
@@ -154,11 +170,13 @@ app.post("/send", async (req, res) => {
     return res.json({
       ok: true,
       id: sent?.id?._serialized || sent?.id?.id || null,
-      to: msisdn
+      to: msisdn,
     });
   } catch (e) {
     console.error("[/send] error:", e);
-    res.status(500).json({ ok: false, message: e?.message || "Gagal kirim WA" });
+    res
+      .status(500)
+      .json({ ok: false, message: e?.message || "Gagal kirim WA" });
   }
 });
 
@@ -168,12 +186,16 @@ app.post("/send-document", async (req, res) => {
     const { to, url, base64, filename, caption, mimeType } = req.body || {};
     if (!to) return res.status(400).json({ ok: false, message: "to wajib" });
     if (!url && !base64) {
-      return res.status(400).json({ ok: false, message: "url atau base64 wajib" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "url atau base64 wajib" });
     }
 
     const jid = `${normNumber(to)}@c.us`;
 
-    let b64, mime = mimeType || "application/pdf", name = filename || "invoice.pdf";
+    let b64,
+      mime = mimeType || "application/pdf",
+      name = filename || "invoice.pdf";
     if (url) {
       const r = await fetch(url);
       if (!r.ok) throw new Error(`Gagal fetch PDF: ${r.status}`);
@@ -193,6 +215,51 @@ app.post("/send-document", async (req, res) => {
   }
 });
 
+// Kirim gambar (JPG/PNG)
+// body: { to: string, url?: string, base64?: string, caption?: string, mimeType?: string, filename?: string }
+app.post("/send-image", async (req, res) => {
+  try {
+    if (await ensureReady(res)) return;
+    const { to, url, base64, caption, mimeType, filename } = req.body || {};
+    if (!to) return res.status(400).json({ ok: false, message: "`to` wajib" });
+    if (!url && !base64)
+      return res
+        .status(400)
+        .json({ ok: false, message: "`url` atau `base64` wajib" });
+
+    const jid = `${normNumber(to)}@c.us`;
+
+    // deteksi mime default
+    const mime = mimeType || "image/jpeg";
+    const name = filename || (mime.includes("png") ? "image.png" : "image.jpg");
+
+    let b64;
+    if (url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`Gagal fetch image: ${r.status}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      b64 = buf.toString("base64");
+    } else {
+      b64 = base64;
+    }
+
+    const media = new MessageMedia(mime, b64, name);
+    const sent = await client.sendMessage(jid, media, {
+      caption: caption || "",
+    });
+
+    return res.json({
+      ok: true,
+      id: sent?.id?._serialized || null,
+    });
+  } catch (e) {
+    console.error("[/send-image] error:", e);
+    return res
+      .status(500)
+      .json({ ok: false, message: String(e?.message || e) });
+  }
+});
+
 // Bulk kirim (opsional)
 // body: { items: [{to, text}, ...], delayMs?: number }
 app.post("/bulk", async (req, res) => {
@@ -200,7 +267,9 @@ app.post("/bulk", async (req, res) => {
     if (await ensureReady(res)) return;
     const { items, delayMs = 800 } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, message: "`items` wajib array" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "`items` wajib array" });
     }
 
     const results = [];
@@ -210,11 +279,19 @@ app.post("/bulk", async (req, res) => {
         if (!msisdn) throw new Error("Nomor tidak valid");
         const jid = `${msisdn}@c.us`;
         const sent = await client.sendMessage(jid, it.text);
-        results.push({ to: msisdn, ok: true, id: sent?.id?._serialized || null });
+        results.push({
+          to: msisdn,
+          ok: true,
+          id: sent?.id?._serialized || null,
+        });
       } catch (err) {
-        results.push({ to: it.to, ok: false, message: err?.message || "error" });
+        results.push({
+          to: it.to,
+          ok: false,
+          message: err?.message || "error",
+        });
       }
-      if (delayMs) await new Promise(r => setTimeout(r, delayMs));
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
     }
 
     res.json({ ok: true, results });
